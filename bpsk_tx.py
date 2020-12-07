@@ -6,7 +6,7 @@ import numpy as np
 
 # Arguments
 parser = argparse.ArgumentParser()
-parser.add_argument('--sample-rate', type=int, default=10e6)
+parser.add_argument('--sample-rate', type=int, default=1e6)
 parser.add_argument('--samples-per-symbol', type=int, default=10)
 parser.add_argument('--bandwidth', type=int, default=5e6)
 parser.add_argument('--rf', type=int, default=2420e6)
@@ -56,14 +56,29 @@ def main(args):
     # Build preamble, sync code (unique word) and data
     samples = np.exp( 1j * math.pi * np.array(data, np.complex64) ).astype(np.complex64)
 
-    for i in range(10000):
+    # Build 0...0 (1 + 0j)s
+    base = np.ones(mtu, np.complex64)
+
+    # Transmit the base signal (to warm up)
+    for i in range(5000):
         status = sdr.writeStream(txStream, [base], base.size, timeoutUs=1000000)
+        if status.ret != base.size:
+            sys.stderr.write("Failed to transmit all samples in writeStream(): {}\n".format(status.ret))
+            return False
 
     # Transmit the samples
+    print("Sending data...")
     status = sdr.writeStream(txStream, [samples], samples.size, SoapySDR.SOAPY_SDR_END_BURST, timeoutUs=1000000)
     if status.ret != samples.size:
         sys.stderr.write("Failed to transmit all samples in writeStream(): {}\n".format(status.ret))
         return False
+
+    # Transmit the base signal
+    for i in range(5000):
+        status = sdr.writeStream(txStream, [base], base.size, timeoutUs=1000000)
+        if status.ret != base.size:
+            sys.stderr.write("Failed to transmit all samples in writeStream(): {}\n".format(status.ret))
+            return False
 
     # Deactivate and close the stream
     sdr.deactivateStream(txStream)
