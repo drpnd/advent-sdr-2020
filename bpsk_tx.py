@@ -60,7 +60,7 @@ def main(args):
     base = np.ones(mtu, np.complex64)
 
     # Transmit the base signal (to warm up)
-    for i in range(5000):
+    for i in range(10000):
         status = sdr.writeStream(txStream, [base], base.size, timeoutUs=1000000)
         if status.ret != base.size:
             sys.stderr.write("Failed to transmit all samples in writeStream(): {}\n".format(status.ret))
@@ -74,7 +74,7 @@ def main(args):
         return False
 
     # Transmit the base signal
-    for i in range(5000):
+    for i in range(10000):
         status = sdr.writeStream(txStream, [base], base.size, timeoutUs=1000000)
         if status.ret != base.size:
             sys.stderr.write("Failed to transmit all samples in writeStream(): {}\n".format(status.ret))
