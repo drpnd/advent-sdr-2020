@@ -36,7 +36,7 @@ def main(args):
     sdr.setGain(SoapySDR.SOAPY_SDR_RX, 0, 30.0)
     sdr.setFrequency(SoapySDR.SOAPY_SDR_RX, 0, args.rf)
 
-    # Setup a Rx stream
+    # Setup an Rx stream
     rxStream = sdr.setupStream(SoapySDR.SOAPY_SDR_RX, SoapySDR.SOAPY_SDR_CF32, [0])
     # Activate the stream
     sdr.activateStream(rxStream)
