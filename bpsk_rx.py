@@ -64,8 +64,11 @@ def main(args):
         diffAngles = np.arctan2(x.imag, x.real)
         # Check if the preamble is included
         if np.sum(np.absolute(diffAngles) > math.pi / 2) >= 8 * args.samples_per_symbol:
+            firstIndex = np.where(np.absolute(diffAngles) > math.pi / 2)[0][0]
+            if firstIndex > mtu:
+                firstIndex -= mtu
             # Concatenate two sample buffers
-            samples = rxBuffer
+            samples = np.copy(rxBuffer)
             status = sdr.readStream(rxStream, [rxBuffer], rxBuffer.size)
             if status.ret != rxBuffer.size:
                 sys.stderr.write("Failed to receive samples in readStream(): {}\n".format(status.ret))
@@ -74,15 +77,16 @@ def main(args):
             amps = np.hypot(samples.real, samples.imag)
             angles = np.arctan2(samples.imag, samples.real)
             # Plot
-            ts = np.arange(samples.size)
+            NR = 600
+            ts = np.arange(NR)
             fig = plt.figure()
-            plt.plot(ts, amps, 'g', label='r')
-            plt.plot(ts, angles, 'bo-', label='theta')
+            plt.plot(ts, amps[firstIndex:firstIndex+NR], 'g', label='r')
+            plt.plot(ts, angles[firstIndex:firstIndex+NR], 'bo-', label='theta')
             plt.xlabel('Samples')
             plt.ylabel('Amplitude / Phase')
             plt.savefig('figure.png')
             break
-        prevSamples = rxBuffer
+        prevSamples = np.copy(rxBuffer)
 
     # Deactivate and close the stream
     sdr.deactivateStream(rxStream)
