@@ -65,7 +65,7 @@ def main(args):
         # Check if the preamble is included
         if np.sum(np.absolute(diffAngles) > math.pi / 2) >= 8 * args.samples_per_symbol:
             firstIndex = np.where(np.absolute(diffAngles) > math.pi / 2)[0][0]
-            if firstIndex > mtu:
+            if firstIndex >= mtu:
                 firstIndex -= mtu
             # Concatenate two sample buffers
             samples = np.copy(rxBuffer)
