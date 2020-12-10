@@ -3,9 +3,6 @@ import sys
 import argparse
 import math
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 # Arguments
 parser = argparse.ArgumentParser()
@@ -64,9 +61,6 @@ def main(args):
         diffAngles = np.arctan2(x.imag, x.real)
         # Check if the preamble is included
         if np.sum(np.absolute(diffAngles) > math.pi / 2) >= 8 * args.samples_per_symbol:
-            firstIndex = np.where(np.absolute(diffAngles) > math.pi / 2)[0][0]
-            if firstIndex >= mtu:
-                firstIndex -= mtu
             # Concatenate two sample buffers
             samples = np.copy(rxBuffer)
             status = sdr.readStream(rxStream, [rxBuffer], rxBuffer.size)
@@ -74,23 +68,82 @@ def main(args):
                 sys.stderr.write("Failed to receive samples in readStream(): {}\n".format(status.ret))
                 return False
             samples = np.concatenate([samples, rxBuffer])
-            amps = np.hypot(samples.real, samples.imag)
-            angles = np.arctan2(samples.imag, samples.real)
-            # Plot
-            NR = 600
-            ts = np.arange(NR)
-            fig = plt.figure()
-            plt.plot(ts, amps[firstIndex:firstIndex+NR], 'g', label='r')
-            plt.plot(ts, angles[firstIndex:firstIndex+NR], 'bo-', label='theta')
-            plt.xlabel('Samples')
-            plt.ylabel('Amplitude / Phase')
-            plt.savefig('figure.png')
-            break
+            if demodulate(samples, args.samples_per_symbol):
+                break
         prevSamples = np.copy(rxBuffer)
 
     # Deactivate and close the stream
     sdr.deactivateStream(rxStream)
     sdr.closeStream(rxStream)
+
+"""
+Detect edge
+"""
+def detectEdge(samples, samples_per_symbol):
+    shifted = samples[1:]
+    orig = samples[0:-1]
+    orig = np.where(orig==0, orig + 1e-9, orig) # to avoid zero division
+    x = shifted / orig
+    diffAngles = np.arctan2(x.imag, x.real)
+    # Find the change points of a phase
+    changePoints = np.where(np.absolute(diffAngles) > math.pi / 2)[0]
+    # Find the edge index
+    bc = np.bincount(changePoints % samples_per_symbol)
+    return np.argmax(bc)
+
+"""
+Demodulate
+"""
+def demodulate(samples, samples_per_symbol):
+    # Detect the edge offset
+    edgeIndex = detectEdge(samples, samples_per_symbol)
+    # Decode symbols from the center signal
+    symbols = samples[range(edgeIndex + 4, samples.size, samples_per_symbol)]
+
+    # PCA
+    c = np.cov(np.array([symbols.real, symbols.imag]))
+    e = np.linalg.eig(c)
+    v = e[1][:,np.argmax(e[0])]
+    base = v[0] + 1j * v[1]
+    if base == 0:
+        base = 1e-9
+
+    # Demodulate the symbols
+    demod = symbols / base
+    binary = np.where(demod.real >= 0, True, False)
+
+    # Detect the preamble
+    psync = np.array([False, True, False, True, False, True, True, True, False, False, True, False, True, False, True, True, True, True, False, True, False, True, False, False])
+    bstr = binary.tostring()
+    try:
+        idx0 = bstr.index(psync.tostring())
+    except:
+        idx0 = -1
+    try:
+        idx1 = bstr.index(np.logical_not(psync).tostring())
+    except:
+        idx1 = -1
+
+    if idx0 < 0 and idx1 < 0:
+        return False
+    elif idx0 < 0:
+        idx = idx1
+        binary = np.logical_not(binary)
+    elif idx1 < 0 or idx0 < idx1:
+        idx = idx0
+    else:
+        idx = idx1
+        binary = np.logical_not(binary)
+
+    sys.stdout.write("Received data:")
+    for i in range(16):
+        if binary[idx + psync.size + i]:
+            sys.stdout.write(" 1")
+        else:
+            sys.stdout.write(" 0")
+    print("")
+
+    return True
 
 
 """
