@@ -5,6 +5,7 @@ import math
 import numpy as np
 import bitstring
 import binascii
+import crcmod
 
 # Arguments
 parser = argparse.ArgumentParser()
@@ -109,7 +110,7 @@ def crc16(bstr):
     f = crcmod.predefined.mkPredefinedCrcFun('crc-aug-ccitt')
     return f(bstr)
 def crc16_checksum(bstr):
-    return crc16(bstr).o_bytes(2, 'big')
+    return crc16(bstr).to_bytes(2, 'big')
 def crc16_check(bstr):
     if crc16(bstr) == 0:
         return True
@@ -137,9 +138,9 @@ def transmit_packet(sdr, txStream, dst, src, seqno, data):
     # Build the datalink layer frame
     frame = build_datalink(dst, src, seqno, bitstring.BitArray(data))
     # Build the physical layer protocol header
-    phy = build_phy(frame.length)
+    phy = build_phy(frame.size)
     # Combine the physical layer header and the data-link frame
-    symbols = phy + frame
+    symbols = np.concatenate([phy, frame])
 
     # Get samples from symbols
     samples = np.repeat(symbols, SAMPLES_PER_SYMBOL)
@@ -161,7 +162,7 @@ Build phy header
 """
 def build_phy(length):
     # Physical layer
-    hdr = MODULATION_BPSK + BYTE_ZERO + data.length
+    hdr = MODULATION_BPSK + BYTE_ZERO + length
     # CRC-16
     cksum = crc16_checksum(hdr.bytes)
     phy = PREAMBLE + SFD + hdr + bitstring.BitArray(bytes=cksum, length=16)
