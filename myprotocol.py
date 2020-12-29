@@ -133,11 +133,9 @@ def crc32_check(bstr):
 """
 Transmit
 """
-def transmit_packet(sdr, txStream, dst, src, data):
-    src = bitstring.BitArray(int=1, length=32)
-    dst = bitstring.BitArray(int=2, length=32)
+def transmit_packet(sdr, txStream, dst, src, seqno, data):
     # Build the datalink layer frame
-    frame = build_datalink(dst, src, 1, bitstring.BitArray(data))
+    frame = build_datalink(dst, src, seqno, bitstring.BitArray(data))
     # Build the physical layer protocol header
     phy = build_phy(frame.length)
     # Combine the physical layer header and the data-link frame
