@@ -133,13 +133,29 @@ def crc32_check(bstr):
 """
 Transmit
 """
-def tx_packet(sdr, data):
+def transmit_packet(sdr, txStream, dst, src, data):
     src = bitstring.BitArray(int=1, length=32)
     dst = bitstring.BitArray(int=2, length=32)
-    frame = build_datalink(dst, src, 1, data)
+    # Build the datalink layer frame
+    frame = build_datalink(dst, src, 1, bitstring.BitArray(data))
+    # Build the physical layer protocol header
     phy = build_phy(frame.length)
     # Combine the physical layer header and the data-link frame
     symbols = phy + frame
+
+    # Get samples from symbols
+    samples = np.repeat(symbols, SAMPLES_PER_SYMBOL)
+
+    mtu = sdr.getStreamMTU(txStream)
+    sent = 0
+    while sent < len(samples):
+        chunk = samples[sent:sent+mtu]
+        status = sdr.writeStream(txStream, [chunk], chunk.size, timeoutUs=1000000)
+        if status.ret != chunk.size:
+            sys.stderr.write("Failed to transmit all samples in writeStream(): {}\n".format(status.ret))
+            return False
+        sent += status.ret
+
     return True
 
 """
@@ -170,6 +186,12 @@ def build_datalink(dst, src, seqno, data):
     return modulate_bpsk(frame)
 
 """
+Modulate
+"""
+def modulate_bpsk(data):
+    return np.exp( 1j * math.pi * np.array(data, np.complex64) ).astype(np.complex64)
+
+"""
 Detect edge
 """
 def detectEdge(samples, samples_per_symbol):
@@ -184,11 +206,6 @@ def detectEdge(samples, samples_per_symbol):
     bc = np.bincount(changePoints % samples_per_symbol)
     return np.argmax(bc)
 
-"""
-Modulate
-"""
-def modulate_bpsk(data):
-    return np.exp( 1j * math.pi * np.array(data, np.complex64) ).astype(np.complex64)
 
 """
 Demodulate
