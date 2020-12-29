@@ -5,7 +5,6 @@ import math
 import numpy as np
 import bitstring
 import binascii
-import struct
 
 # Arguments
 parser = argparse.ArgumentParser()
@@ -17,13 +16,14 @@ parser.add_argument('--rx-gain', type=float, default=30.0)
 parser.add_argument('--rx-antenna', type=str, default='LNAW')
 
 PREAMBLE = bitstring.BitArray(hex='aa') * 16
-SYNC = bitstring.BitArray(hex='2bd4')
+SFD = bitstring.BitArray(hex='2bd4')
 MODULATION_BPSK = bitstring.BitArray(hex='01')
-ZERO_BYTE = bitstring.BitArray(hex='00')
+BYTE_ZERO = bitstring.BitArray(hex='00')
+
+FRAME_TYPE_DATA = bitstring.BitArray(hex='00')
 
 SAMPLE_RATE = 1e6
 SAMPLES_PER_SYMBOL = 10
-
 
 """
 Main routine
@@ -106,12 +106,10 @@ def main(args):
 CRC-16
 """
 def crc16(bstr):
-    #f = crcmod.mkCrcFun(0x11021, rev=False, initCrc=0x1d0f, xorOut=0x0000)
     f = crcmod.predefined.mkPredefinedCrcFun('crc-aug-ccitt')
     return f(bstr)
 def crc16_checksum(bstr):
-    return crc16(bstr).to_bytes(2, 'big')
-    #return struct.pack('>H', crc16(bstr))
+    return crc16(bstr).o_bytes(2, 'big')
 def crc16_check(bstr):
     if crc16(bstr) == 0:
         return True
@@ -122,12 +120,10 @@ def crc16_check(bstr):
 CRC-32
 """
 def crc32(bstr):
-    #f = crcmod.mkCrcFun(0x104c11db7, rev=True, initCrc=0x00000000, xorOut=0xffffffff)
     f = crcmod.predefined.mkPredefinedCrcFun('crc32')
     return f(bstr)
-def crc32_str(bstr):
+def crc32_checksum(bstr):
     return crc32(bstr).to_bytes(4, 'little')
-    #return struct.pack('<L', crc32(bstr))
 def crc32_check(bstr):
     if crc32(bstr) == 0x2144df1c:
         return True
@@ -138,12 +134,40 @@ def crc32_check(bstr):
 Transmit
 """
 def tx_packet(sdr, data):
-    # Physical layer
-    PREAMBLE + SYNC + MODULATION_BPSK + RESERVED + ZERO_BYTE
-    # CRC-16
-    
+    src = bitstring.BitArray(int=1, length=32)
+    dst = bitstring.BitArray(int=2, length=32)
+    frame = build_datalink(dst, src, 1, data)
+    phy = build_phy(frame.length)
+    # Combine the physical layer header and the data-link frame
+    symbols = phy + frame
     return True
 
+"""
+Build phy header
+"""
+def build_phy(length):
+    # Physical layer
+    hdr = MODULATION_BPSK + BYTE_ZERO + data.length
+    # CRC-16
+    cksum = crc16_checksum(hdr.bytes)
+    phy = PREAMBLE + SFD + hdr + bitstring.BitArray(bytes=cksum, length=16)
+    # Modulate
+    return modulate_bpsk(phy)
+
+"""
+Build datalink frame
+"""
+def build_datalink(dst, src, seqno, data):
+    # Count the number of symbols (including CRC-32)
+    symbols = bitstring.BitArray(int=data.len + 136, length=16)
+    # Sequence number
+    seq = bitstring.BitArray(int=seqno, length=16)
+    # Build a frame
+    frame = FRAME_TYPE_DATA + symbols + dst + src + seq + data
+    # Calculate the checksum
+    cksum = crc32_checksum(frame.bytes)
+    frame += cksum
+    return modulate_bpsk(frame)
 
 """
 Detect edge
@@ -163,11 +187,8 @@ def detectEdge(samples, samples_per_symbol):
 """
 Modulate
 """
-def modulate_bpsk(data, samples_per_symbol):
-    samples = []
-    for b in data:
-        samples += [b] * samples_per_symbol
-    return np.exp( 1j * math.pi * np.array(samples, np.complex64) ).astype(np.complex64)
+def modulate_bpsk(data):
+    return np.exp( 1j * math.pi * np.array(data, np.complex64) ).astype(np.complex64)
 
 """
 Demodulate
