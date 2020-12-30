@@ -45,14 +45,14 @@ def main(args):
     sdr.setSampleRate(SoapySDR.SOAPY_SDR_TX, 0, SAMPLE_RATE)
     sdr.setBandwidth(SoapySDR.SOAPY_SDR_TX, 0, args.bandwidth)
     sdr.setAntenna(SoapySDR.SOAPY_SDR_TX, 0, args.tx_antenna)
-    sdr.setGain(SoapySDR.SOAPY_SDR_TX, 0, args.tx_gain)
+    sdr.setGain(SoapySDR.SOAPY_SDR_TX, 0, "PAD", args.tx_gain)
     sdr.setFrequency(SoapySDR.SOAPY_SDR_TX, 0, args.rf)
 
     # Setup the Rx channel 0
     sdr.setSampleRate(SoapySDR.SOAPY_SDR_RX, 0, SAMPLE_RATE)
     sdr.setBandwidth(SoapySDR.SOAPY_SDR_RX, 0, args.bandwidth)
     sdr.setAntenna(SoapySDR.SOAPY_SDR_RX, 0, args.rx_antenna)
-    sdr.setGain(SoapySDR.SOAPY_SDR_RX, 0, args.rx_gain)
+    sdr.setGain(SoapySDR.SOAPY_SDR_RX, 0, "LNA", args.rx_gain)
     sdr.setFrequency(SoapySDR.SOAPY_SDR_RX, 0, args.rf)
 
 
