@@ -25,7 +25,7 @@ FRAME_TYPE_DATA = bitstring.BitArray(hex='00')
 
 SAMPLE_RATE = 1e6
 SAMPLES_PER_SYMBOL = 10
-RECEIVE_BUFFER_SIZE = 1000
+RECEIVE_BUFFER_SIZE = 100 * SAMPLES_PER_SYMBOL
 RECEIVE_SIGNAL_THRESHOLD = 0.02
 
 """
@@ -69,16 +69,14 @@ def main(args):
     sdr.activateStream(rxStream)
 
     # Loop
-    packetSamples = np.array([], dtype=np.complex64)
     while True:
         # Receive samples
         status = sdr.readStream(rxStream, [rxBuffer], rxBuffer.size)
         if status.ret != rxBuffer.size:
             sys.stderr.write("Failed to receive samples in readStream(): {}\n".format(status.ret))
             return False
-        # Concatenate the curret packet samples and the received ones
-        samples = np.concatenate([packetSamples, rxBuffer])
         # Detect the edge offset
+        samples = rxBuffer
         edgeOffset = detectEdge(samples, SAMPLES_PER_SYMBOL)
         if not edgeOffset:
             # No edge detected
@@ -91,41 +89,25 @@ def main(args):
             # Preamble not detected
             continue
         print("Preamble detected")
-        pass
+        # Receive the samples while the signal is valid
+        packetSymbols = np.copy(symbols)
+        while True:
+            status = sdr.readStream(rxStream, [rxBuffer], rxBuffer.size)
+            if status.ret != rxBuffer.size:
+                sys.stderr.write("Failed to receive samples in readStream(): {}\n".format(status.ret))
+                return False
+            samples = rxBuffer
+            symbols = samples[range(edgeOffset + 4, samples.size, SAMPLES_PER_SYMBOL)]
+            packetSymbols = np.concatenate([packetSymbols, symbols])
+            if np.sum(np.abs(symbols) > RECEIVE_SIGNAL_THRESHOLD) != symbols.size:
+                print("Packet end: # of symbols = {}".format(packetSymbols.size))
+                break
 
     # Deactivate and close the stream
     sdr.deactivateStream(rxStream)
     sdr.closeStream(rxStream)
 
     return True
-
-    prevSamples = np.array([], dtype=np.complex64)
-    while True:
-        # Receive samples
-        status = sdr.readStream(rxStream, [rxBuffer], rxBuffer.size)
-        if status.ret != rxBuffer.size:
-            sys.stderr.write("Failed to receive samples in readStream(): {}\n".format(status.ret))
-            return False
-        # Concatenate the previous samples and the current samples
-        samples = np.concatenate([prevSamples, rxBuffer])
-        # Calculate angles from previous symbols
-        cur = samples[args.samples_per_symbol:] # current symbols
-        prev = samples[0:-args.samples_per_symbol] # previous symbols
-        prev = np.where(prev==0, prev + 1e-9, prev) # to avoid zero division
-        x = cur / prev
-        diffAngles = np.arctan2(x.imag, x.real)
-        # Check if the preamble is included
-        if np.sum(np.absolute(diffAngles) > math.pi / 2) >= 8 * args.samples_per_symbol:
-            # Concatenate two sample buffers
-            samples = np.copy(rxBuffer)
-            status = sdr.readStream(rxStream, [rxBuffer], rxBuffer.size)
-            if status.ret != rxBuffer.size:
-                sys.stderr.write("Failed to receive samples in readStream(): {}\n".format(status.ret))
-                return False
-            samples = np.concatenate([samples, rxBuffer])
-            if demodulate(samples, args.samples_per_symbol):
-                break
-        prevSamples = np.copy(rxBuffer)
 
 
 """
