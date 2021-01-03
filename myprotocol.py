@@ -25,6 +25,8 @@ FRAME_TYPE_DATA = bitstring.BitArray(hex='00')
 
 SAMPLE_RATE = 1e6
 SAMPLES_PER_SYMBOL = 10
+RECEIVE_BUFFER_SIZE = 1000
+RECEIVE_SIGNAL_THRESHOLD = 0.02
 
 """
 Main routine
@@ -55,21 +57,47 @@ def main(args):
     sdr.setGain(SoapySDR.SOAPY_SDR_RX, 0, "LNA", args.rx_gain)
     sdr.setFrequency(SoapySDR.SOAPY_SDR_RX, 0, args.rf)
 
-
     # Setup Tx/Rx streams
     txStream = sdr.setupStream(SoapySDR.SOAPY_SDR_TX, SoapySDR.SOAPY_SDR_CF32, [0])
     rxStream = sdr.setupStream(SoapySDR.SOAPY_SDR_RX, SoapySDR.SOAPY_SDR_CF32, [0])
 
-    # Check the maximum transmit unit
-    mtu = sdr.getStreamMTU(rxStream)
-
     # Prepare a receive buffer
-    rxBuffer = np.zeros(mtu, np.complex64)
+    rxBuffer = np.zeros(RECEIVE_BUFFER_SIZE, np.complex64)
 
     # Activate the streams
     sdr.activateStream(txStream)
     sdr.activateStream(rxStream)
 
+    # Loop
+    packetSamples = np.array([], dtype=np.complex64)
+    while True:
+        # Receive samples
+        status = sdr.readStream(rxStream, [rxBuffer], rxBuffer.size)
+        if status.ret != rxBuffer.size:
+            sys.stderr.write("Failed to receive samples in readStream(): {}\n".format(status.ret))
+            return False
+        # Concatenate the curret packet samples and the received ones
+        samples = np.concatenate([packetSamples, rxBuffer])
+        # Detect the edge offset
+        edgeOffset = detectEdge(samples, SAMPLES_PER_SYMBOL)
+        if not edgeOffset:
+            # No edge detected
+            continue
+        # Decode symbols from the center of a set of samples
+        symbols = samples[range(edgeOffset + 4, samples.size, SAMPLES_PER_SYMBOL)]
+        # Detect the preamble
+        preamblePosition = detectPreamble(symbols)
+        if not preamblePosition:
+            # Preamble not detected
+            continue
+        print("Preamble detected")
+        pass
+
+    # Deactivate and close the stream
+    sdr.deactivateStream(rxStream)
+    sdr.closeStream(rxStream)
+
+    return True
 
     prevSamples = np.array([], dtype=np.complex64)
     while True:
@@ -99,9 +127,6 @@ def main(args):
                 break
         prevSamples = np.copy(rxBuffer)
 
-    # Deactivate and close the stream
-    sdr.deactivateStream(rxStream)
-    sdr.closeStream(rxStream)
 
 """
 CRC-16
@@ -190,20 +215,46 @@ Modulate
 def modulate_bpsk(data):
     return np.exp( 1j * math.pi * np.array(data, np.complex64) ).astype(np.complex64)
 
+
 """
 Detect edge
 """
 def detectEdge(samples, samples_per_symbol):
+    # Amplitude
+    amps = np.abs(samples)
+    # Calculate the phase change points
     shifted = samples[1:]
     orig = samples[0:-1]
     orig = np.where(orig==0, orig + 1e-9, orig) # to avoid zero division
     x = shifted / orig
     diffAngles = np.arctan2(x.imag, x.real)
-    # Find the change points of a phase
-    changePoints = np.where(np.absolute(diffAngles) > math.pi / 2)[0]
+    # Find the change points of a phase (also checking the amplitude)
+    changePoints = np.where( (amps[0:-1] > RECEIVE_SIGNAL_THRESHOLD)
+        & (np.absolute(diffAngles) > math.pi / 2))[0]
     # Find the edge index
+    if changePoints.size == 0:
+        return False
     bc = np.bincount(changePoints % samples_per_symbol)
     return np.argmax(bc)
+
+"""
+Detect preamble
+"""
+def detectPreamble(symbols):
+    # Amplitude and angles
+    amps = np.abs(symbols)
+    # Calculate angles from previous symbols
+    cur = symbols[1:] # current symbols
+    prev = symbols[0:-1] # previous symbols
+    prev = np.where(prev==0, prev + 1e-9, prev) # to avoid zero division
+    diffAngles = np.angle(cur / prev)
+    # Detect part of the preamble using alternating 16 symbols
+    pattern = bitstring.BitArray(hex='ffff')
+    binary = np.where((amps[0:-1] > RECEIVE_SIGNAL_THRESHOLD) & (diffAngles >= 0), True, False)
+    found = bitstring.BitArray(binary).find(pattern)
+    if len(found) == 0:
+        return False
+    return found[0]
 
 
 """
