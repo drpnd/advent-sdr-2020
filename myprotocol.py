@@ -90,7 +90,7 @@ def main(args):
             continue
         print("Preamble detected")
         # Receive the samples while the signal is valid
-        packetSymbols = np.copy(symbols)
+        packetSymbols = np.copy(symbols[preamblePosition:])
         while True:
             status = sdr.readStream(rxStream, [rxBuffer], rxBuffer.size)
             if status.ret != rxBuffer.size:
@@ -102,6 +102,7 @@ def main(args):
             if np.sum(np.abs(symbols) > RECEIVE_SIGNAL_THRESHOLD) != symbols.size:
                 print("Packet end: # of symbols = {}".format(packetSymbols.size))
                 break
+        demodulate(packetSymbols)
 
     # Deactivate and close the stream
     sdr.deactivateStream(rxStream)
@@ -232,17 +233,50 @@ def detectPreamble(symbols):
     diffAngles = np.angle(cur / prev)
     # Detect part of the preamble using alternating 16 symbols
     pattern = bitstring.BitArray(hex='ffff')
-    binary = np.where((amps[0:-1] > RECEIVE_SIGNAL_THRESHOLD) & (diffAngles >= 0), True, False)
+    binary = np.where((amps[0:-1] > RECEIVE_SIGNAL_THRESHOLD) & (np.absolute(diffAngles) > math.pi / 2), True, False)
     found = bitstring.BitArray(binary).find(pattern)
     if len(found) == 0:
         return False
     return found[0]
 
+"""
+Demodulate and decode symbols
+"""
+def demodulate(symbols):
+    # Demodulate symbols (to bits)
+    bits = []
+    # Calculate angles from previous symbols
+    cur = symbols[1:] # current symbols
+    prev = symbols[0:-1] # previous symbols
+    prev = np.where(prev==0, prev + 1e-9, prev) # to avoid zero division
+    diffAngles = np.angle(cur / prev)
+    prev = False
+    for a in np.absolute(diffAngles):
+        if a > math.pi / 2:
+            prev = not prev
+        bits.append(prev)
+
+    # Convert to binary string
+    binary = bitstring.BitArray(bits)
+
+    # Find the preamble + SFD
+    pattern1 = bitstring.BitArray(hex='aa') + SFD
+    pattern2 = ~pattern1
+    found1 = binary.find(pattern1)
+    found2 = binary.find(pattern2)
+    if not found1 and not found2:
+        return False
+    if found2 < found1:
+        data = ~binary[found2:]
+    else:
+        data = binary[found1:]
+
+    return data
 
 """
 Demodulate
 """
-def demodulate(samples, samples_per_symbol):
+def demodulate2(samples, samples_per_symbol):
     # Detect the edge offset
     edgeIndex = detectEdge(samples, samples_per_symbol)
     # Decode symbols from the center signal
