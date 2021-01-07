@@ -81,6 +81,8 @@ def main(args):
         if not edgeOffset:
             # No edge detected
             continue
+        if edgeOffset + 4 >= SAMPLES_PER_SYMBOL:
+            edgeOffset -= SAMPLES_PER_SYMBOL
         # Decode symbols from the center of a set of samples
         symbols = samples[range(edgeOffset + 4, samples.size, SAMPLES_PER_SYMBOL)]
         # Detect the preamble
@@ -143,12 +145,14 @@ def crc32_check(bstr):
 Transmit
 """
 def transmit_packet(sdr, txStream, dst, src, seqno, data):
+    # Postamble
+    postamble = np.ones(128, dtype=np.complex64)
     # Build the datalink layer frame
     frame = build_datalink(dst, src, seqno, bitstring.BitArray(data))
     # Build the physical layer protocol header
     phy = build_phy(frame.size)
     # Combine the physical layer header and the data-link frame
-    symbols = np.concatenate([phy, frame])
+    symbols = np.concatenate([phy, frame, postamble])
 
     # Get samples from symbols
     samples = np.repeat(symbols, SAMPLES_PER_SYMBOL)
@@ -170,7 +174,7 @@ Build phy header
 """
 def build_phy(length):
     # Physical layer
-    hdr = MODULATION_BPSK + BYTE_ZERO + length
+    hdr = MODULATION_BPSK + BYTE_ZERO + bitstring.BitArray(int=length, length=16)
     # CRC-16
     cksum = crc16_checksum(hdr.bytes)
     phy = PREAMBLE + SFD + hdr + bitstring.BitArray(bytes=cksum, length=16)
@@ -266,10 +270,10 @@ def demodulate(symbols):
     found2 = binary.find(pattern2)
     if not found1 and not found2:
         return False
-    if found2 < found1:
-        data = ~binary[found2:]
+    if not found1 or found2 < found1:
+        data = ~binary[found2[0]+pattern2.len:]
     else:
-        data = binary[found1:]
+        data = binary[found1[0]+pattern1.len:]
 
     return data
 
