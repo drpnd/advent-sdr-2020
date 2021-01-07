@@ -278,61 +278,6 @@ def demodulate(symbols):
     return data
 
 """
-Demodulate
-"""
-def demodulate2(samples, samples_per_symbol):
-    # Detect the edge offset
-    edgeIndex = detectEdge(samples, samples_per_symbol)
-    # Decode symbols from the center signal
-    symbols = samples[range(edgeIndex + 4, samples.size, samples_per_symbol)]
-
-    # PCA
-    c = np.cov(np.array([symbols.real, symbols.imag]))
-    e = np.linalg.eig(c)
-    v = e[1][:,np.argmax(e[0])]
-    base = v[0] + 1j * v[1]
-    if base == 0:
-        base = 1e-9
-
-    # Demodulate the symbols
-    demod = symbols / base
-    binary = np.where(demod.real >= 0, True, False)
-
-    # Detect the preamble
-    psync = np.array([False, True, False, True, False, True, True, True, False, False, True, False, True, False, True, True, True, True, False, True, False, True, False, False])
-    bstr = binary.tostring()
-    try:
-        idx0 = bstr.index(psync.tostring())
-    except:
-        idx0 = -1
-    try:
-        idx1 = bstr.index(np.logical_not(psync).tostring())
-    except:
-        idx1 = -1
-
-    if idx0 < 0 and idx1 < 0:
-        return False
-    elif idx0 < 0:
-        idx = idx1
-        binary = np.logical_not(binary)
-    elif idx1 < 0 or idx0 < idx1:
-        idx = idx0
-    else:
-        idx = idx1
-        binary = np.logical_not(binary)
-
-    sys.stdout.write("Received data:")
-    for i in range(16):
-        if binary[idx + psync.size + i]:
-            sys.stdout.write(" 1")
-        else:
-            sys.stdout.write(" 0")
-    print("")
-
-    return True
-
-
-"""
 Call the main routine
 """
 if __name__ == "__main__":
