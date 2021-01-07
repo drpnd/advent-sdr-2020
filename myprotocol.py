@@ -15,18 +15,65 @@ parser.add_argument('--tx-gain', type=float, default=50.0)
 parser.add_argument('--tx-antenna', type=str, default='BAND1')
 parser.add_argument('--rx-gain', type=float, default=30.0)
 parser.add_argument('--rx-antenna', type=str, default='LNAW')
+parser.add_argument('--my-address', type=int, default='1')
+parser.add_argument('--remote-address', type=int, default='2')
+
 
 PREAMBLE = bitstring.BitArray(hex='aa') * 16
 SFD = bitstring.BitArray(hex='2bd4')
 MODULATION_BPSK = bitstring.BitArray(hex='01')
 BYTE_ZERO = bitstring.BitArray(hex='00')
-
 FRAME_TYPE_DATA = bitstring.BitArray(hex='00')
 
 SAMPLE_RATE = 1e6
 SAMPLES_PER_SYMBOL = 10
 RECEIVE_BUFFER_SIZE = 100 * SAMPLES_PER_SYMBOL
 RECEIVE_SIGNAL_THRESHOLD = 0.02
+
+"""
+MyProtocol class
+"""
+class MyPhysicalProtocol:
+    """
+    Constructor
+    """
+    def __init__(self):
+        self.modulation = None
+        self.length = 0
+
+class MyLinkLayerProtocol:
+    """
+    Constructor
+    """
+    def __init__(self):
+        self.frame_type = 0
+        self.symbols = 0
+        self.destination = 0
+        self.source = 0
+        self.sequence_number = 0
+
+"""
+Connection
+"""
+class Connection:
+    """
+    Constructor
+    """
+    def __init__(self, sdr, txStream, myAddress, remoteAddress):
+        self.sdr = sdr
+        self.txStream = txStream
+        self.myAddress = myAddress
+        self.remoteAddress = remoteAddress
+        self.seqno = 0
+
+    """
+    Send data
+    """
+    def send(self, data):
+        src = bitstring.BitArray(int=self.myAddress, length=32)
+        dst = bitstring.BitArray(int=self.remoteAddress, length=32)
+        self.seqno += 1
+        return transmit_packet(self.sdr, self.txStream, dst, src, self.seqno, data)
 
 """
 Main routine
@@ -90,7 +137,6 @@ def main(args):
         if not preamblePosition:
             # Preamble not detected
             continue
-        print("Preamble detected")
         # Receive the samples while the signal is valid
         packetSymbols = np.copy(symbols[preamblePosition:])
         while True:
@@ -104,7 +150,7 @@ def main(args):
             if np.sum(np.abs(symbols) > RECEIVE_SIGNAL_THRESHOLD) != symbols.size:
                 print("Packet end: # of symbols = {}".format(packetSymbols.size))
                 break
-        demodulate(packetSymbols)
+        data = demodulate(packetSymbols)
 
     # Deactivate and close the stream
     sdr.deactivateStream(rxStream)
