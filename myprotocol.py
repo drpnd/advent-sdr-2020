@@ -32,6 +32,141 @@ RECEIVE_BUFFER_SIZE = 100 * SAMPLES_PER_SYMBOL
 RECEIVE_SIGNAL_THRESHOLD = 0.02
 
 """
+CRC-16
+"""
+def crc16(bstr):
+    f = crcmod.predefined.mkPredefinedCrcFun('crc-aug-ccitt')
+    return f(bstr)
+def crc16_checksum(bstr):
+    return crc16(bstr).to_bytes(2, 'big')
+def crc16_check(bstr):
+    if crc16(bstr) == 0:
+        return True
+    else:
+        return False
+
+"""
+CRC-32
+"""
+def crc32(bstr):
+    f = crcmod.predefined.mkPredefinedCrcFun('crc32')
+    return f(bstr)
+def crc32_checksum(bstr):
+    return crc32(bstr).to_bytes(4, 'little')
+def crc32_check(bstr):
+    if crc32(bstr) == 0x2144df1c:
+        return True
+    else:
+        return False
+
+"""
+Build phy header
+"""
+def build_phy(length):
+    # Physical layer
+    hdr = MODULATION_BPSK + BYTE_ZERO + bitstring.BitArray(int=length, length=16)
+    # CRC-16
+    cksum = crc16_checksum(hdr.bytes)
+    phy = PREAMBLE + SFD + hdr + bitstring.BitArray(bytes=cksum, length=16)
+    # Modulate
+    return modulate_bpsk(phy)
+
+"""
+Build datalink frame
+"""
+def build_datalink(dst, src, seqno, data):
+    # Count the number of symbols (including CRC-32)
+    symbols = bitstring.BitArray(int=data.len + 136, length=16)
+    # Sequence number
+    seq = bitstring.BitArray(int=seqno, length=16)
+    # Build a frame
+    frame = FRAME_TYPE_DATA + symbols + dst + src + seq + data
+    # Calculate the checksum
+    cksum = crc32_checksum(frame.bytes)
+    frame += cksum
+    return modulate_bpsk(frame)
+
+"""
+Modulate
+"""
+def modulate_bpsk(data):
+    return np.exp( 1j * math.pi * np.array(data, np.complex64) ).astype(np.complex64)
+
+"""
+Detect edge
+"""
+def detectEdge(samples, samples_per_symbol):
+    # Amplitude
+    amps = np.abs(samples)
+    # Calculate the phase change points
+    shifted = samples[1:]
+    orig = samples[0:-1]
+    orig = np.where(orig==0, orig + 1e-9, orig) # to avoid zero division
+    x = shifted / orig
+    diffAngles = np.arctan2(x.imag, x.real)
+    # Find the change points of a phase (also checking the amplitude)
+    changePoints = np.where( (amps[0:-1] > RECEIVE_SIGNAL_THRESHOLD)
+        & (np.absolute(diffAngles) > math.pi / 2))[0]
+    # Find the edge index
+    if changePoints.size == 0:
+        return False
+    bc = np.bincount(changePoints % samples_per_symbol)
+    return np.argmax(bc)
+
+"""
+Detect preamble
+"""
+def detectPreamble(symbols):
+    # Amplitude and angles
+    amps = np.abs(symbols)
+    # Calculate angles from previous symbols
+    cur = symbols[1:] # current symbols
+    prev = symbols[0:-1] # previous symbols
+    prev = np.where(prev==0, prev + 1e-9, prev) # to avoid zero division
+    diffAngles = np.angle(cur / prev)
+    # Detect part of the preamble using alternating 16 symbols
+    pattern = bitstring.BitArray(hex='ffff')
+    binary = np.where((amps[0:-1] > RECEIVE_SIGNAL_THRESHOLD) & (np.absolute(diffAngles) > math.pi / 2), True, False)
+    found = bitstring.BitArray(binary).find(pattern)
+    if len(found) == 0:
+        return False
+    return found[0]
+
+"""
+Demodulate and decode symbols
+"""
+def demodulate(symbols):
+    # Demodulate symbols (to bits)
+    bits = []
+    # Calculate angles from previous symbols
+    cur = symbols[1:] # current symbols
+    prev = symbols[0:-1] # previous symbols
+    prev = np.where(prev==0, prev + 1e-9, prev) # to avoid zero division
+    diffAngles = np.angle(cur / prev)
+    prev = False
+    for a in np.absolute(diffAngles):
+        if a > math.pi / 2:
+            prev = not prev
+        bits.append(prev)
+
+    # Convert to binary string
+    binary = bitstring.BitArray(bits)
+
+    # Find the preamble + SFD
+    pattern1 = bitstring.BitArray(hex='aa') + SFD
+    pattern2 = ~pattern1
+    found1 = binary.find(pattern1)
+    found2 = binary.find(pattern2)
+    if not found1 and not found2:
+        return False
+    if not found1 or found2 < found1:
+        data = ~binary[found2[0]+pattern2.len:]
+    else:
+        data = binary[found1[0]+pattern1.len:]
+
+    return data
+
+"""
 PHysical & data link layer protocol class
 """
 class MyProtocol:
@@ -243,141 +378,6 @@ def main(args):
             print(ret)
 
     return True
-
-"""
-CRC-16
-"""
-def crc16(bstr):
-    f = crcmod.predefined.mkPredefinedCrcFun('crc-aug-ccitt')
-    return f(bstr)
-def crc16_checksum(bstr):
-    return crc16(bstr).to_bytes(2, 'big')
-def crc16_check(bstr):
-    if crc16(bstr) == 0:
-        return True
-    else:
-        return False
-
-"""
-CRC-32
-"""
-def crc32(bstr):
-    f = crcmod.predefined.mkPredefinedCrcFun('crc32')
-    return f(bstr)
-def crc32_checksum(bstr):
-    return crc32(bstr).to_bytes(4, 'little')
-def crc32_check(bstr):
-    if crc32(bstr) == 0x2144df1c:
-        return True
-    else:
-        return False
-
-"""
-Build phy header
-"""
-def build_phy(length):
-    # Physical layer
-    hdr = MODULATION_BPSK + BYTE_ZERO + bitstring.BitArray(int=length, length=16)
-    # CRC-16
-    cksum = crc16_checksum(hdr.bytes)
-    phy = PREAMBLE + SFD + hdr + bitstring.BitArray(bytes=cksum, length=16)
-    # Modulate
-    return modulate_bpsk(phy)
-
-"""
-Build datalink frame
-"""
-def build_datalink(dst, src, seqno, data):
-    # Count the number of symbols (including CRC-32)
-    symbols = bitstring.BitArray(int=data.len + 136, length=16)
-    # Sequence number
-    seq = bitstring.BitArray(int=seqno, length=16)
-    # Build a frame
-    frame = FRAME_TYPE_DATA + symbols + dst + src + seq + data
-    # Calculate the checksum
-    cksum = crc32_checksum(frame.bytes)
-    frame += cksum
-    return modulate_bpsk(frame)
-
-"""
-Modulate
-"""
-def modulate_bpsk(data):
-    return np.exp( 1j * math.pi * np.array(data, np.complex64) ).astype(np.complex64)
-
-"""
-Detect edge
-"""
-def detectEdge(samples, samples_per_symbol):
-    # Amplitude
-    amps = np.abs(samples)
-    # Calculate the phase change points
-    shifted = samples[1:]
-    orig = samples[0:-1]
-    orig = np.where(orig==0, orig + 1e-9, orig) # to avoid zero division
-    x = shifted / orig
-    diffAngles = np.arctan2(x.imag, x.real)
-    # Find the change points of a phase (also checking the amplitude)
-    changePoints = np.where( (amps[0:-1] > RECEIVE_SIGNAL_THRESHOLD)
-        & (np.absolute(diffAngles) > math.pi / 2))[0]
-    # Find the edge index
-    if changePoints.size == 0:
-        return False
-    bc = np.bincount(changePoints % samples_per_symbol)
-    return np.argmax(bc)
-
-"""
-Detect preamble
-"""
-def detectPreamble(symbols):
-    # Amplitude and angles
-    amps = np.abs(symbols)
-    # Calculate angles from previous symbols
-    cur = symbols[1:] # current symbols
-    prev = symbols[0:-1] # previous symbols
-    prev = np.where(prev==0, prev + 1e-9, prev) # to avoid zero division
-    diffAngles = np.angle(cur / prev)
-    # Detect part of the preamble using alternating 16 symbols
-    pattern = bitstring.BitArray(hex='ffff')
-    binary = np.where((amps[0:-1] > RECEIVE_SIGNAL_THRESHOLD) & (np.absolute(diffAngles) > math.pi / 2), True, False)
-    found = bitstring.BitArray(binary).find(pattern)
-    if len(found) == 0:
-        return False
-    return found[0]
-
-"""
-Demodulate and decode symbols
-"""
-def demodulate(symbols):
-    # Demodulate symbols (to bits)
-    bits = []
-    # Calculate angles from previous symbols
-    cur = symbols[1:] # current symbols
-    prev = symbols[0:-1] # previous symbols
-    prev = np.where(prev==0, prev + 1e-9, prev) # to avoid zero division
-    diffAngles = np.angle(cur / prev)
-    prev = False
-    for a in np.absolute(diffAngles):
-        if a > math.pi / 2:
-            prev = not prev
-        bits.append(prev)
-
-    # Convert to binary string
-    binary = bitstring.BitArray(bits)
-
-    # Find the preamble + SFD
-    pattern1 = bitstring.BitArray(hex='aa') + SFD
-    pattern2 = ~pattern1
-    found1 = binary.find(pattern1)
-    found2 = binary.find(pattern2)
-    if not found1 and not found2:
-        return False
-    if not found1 or found2 < found1:
-        data = ~binary[found2[0]+pattern2.len:]
-    else:
-        data = binary[found1[0]+pattern1.len:]
-
-    return data
 
 """
 Call the main routine
