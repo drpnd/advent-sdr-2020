@@ -168,7 +168,6 @@ class SdrInterface:
             symbols = rxBuffer[range(edgeOffset + 4, rxBuffer.size, SAMPLES_PER_SYMBOL)]
             packetSymbols = np.concatenate([packetSymbols, symbols])
             if np.sum(np.abs(symbols) > RECEIVE_SIGNAL_THRESHOLD) != symbols.size:
-                print("Packet end: # of symbols = {}".format(packetSymbols.size))
                 break
         data = demodulate(packetSymbols)
         # Parse the protocol data
