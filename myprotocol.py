@@ -18,62 +18,133 @@ parser.add_argument('--rx-antenna', type=str, default='LNAW')
 parser.add_argument('--my-address', type=int, default='1')
 parser.add_argument('--remote-address', type=int, default='2')
 
-
+# Constant values
 PREAMBLE = bitstring.BitArray(hex='aa') * 16
 SFD = bitstring.BitArray(hex='2bd4')
 MODULATION_BPSK = bitstring.BitArray(hex='01')
 BYTE_ZERO = bitstring.BitArray(hex='00')
 FRAME_TYPE_DATA = bitstring.BitArray(hex='00')
 
+# Definitions of protocol parameters
 SAMPLE_RATE = 1e6
 SAMPLES_PER_SYMBOL = 10
 RECEIVE_BUFFER_SIZE = 100 * SAMPLES_PER_SYMBOL
 RECEIVE_SIGNAL_THRESHOLD = 0.02
 
 """
-MyProtocol class
+PHysical & data link layer protocol class
 """
-class MyPhysicalProtocol:
+class MyProtocol:
     """
     Constructor
     """
     def __init__(self):
         self.modulation = None
         self.length = 0
+    """
+    Parse symbols to get a frame
+    """
+    def parse(self, data):
+        # Physical layer
+        self.modulation = data[0:8].int
+        self.length = data[16:32].int
+        # Check the checksum∫
+        if not crc16_check(data[0:48].bytes):
+            return False
+        # Data-link layer
+        self.frame_type = data[48:56].int
+        self.symbols = data[56:72].int
+        self.destination = data[72:104].int
+        self.source = data[104:136].int
+        self.sequence_number = data[136:152].int
+        if data.len - 48 < self.symbols:
+            return False
+        self.payload = data[152:16 + self.symbols].bytes
+        # Check the checksum
+        if not crc32_check(data[48:48 + self.symbols].bytes):
+            return False
+        return True
 
-class MyLinkLayerProtocol:
+"""
+SdrInterface
+"""
+class SdrInterface:
     """
     Constructor
     """
-    def __init__(self):
-        self.frame_type = 0
-        self.symbols = 0
-        self.destination = 0
-        self.source = 0
-        self.sequence_number = 0
-
-"""
-Connection
-"""
-class Connection:
-    """
-    Constructor
-    """
-    def __init__(self, sdr, txStream, myAddress, remoteAddress):
+    def __init__(self, sdr, address):
         self.sdr = sdr
-        self.txStream = txStream
-        self.myAddress = myAddress
-        self.remoteAddress = remoteAddress
+        self.address = address
+        self.connections = {}
+        # Initialize the tx/rx streams
+        self.txStream = sdr.setupStream(SoapySDR.SOAPY_SDR_TX, SoapySDR.SOAPY_SDR_CF32, [0])
+        self.rxStream = sdr.setupStream(SoapySDR.SOAPY_SDR_RX, SoapySDR.SOAPY_SDR_CF32, [0])
+        # Activate the streams
+        sdr.activateStream(self.txStream)
+        sdr.activateStream(self.rxStream)
+
+    """
+    Create a new connection
+    """
+    def newConnection(self, target):
+        if target in self.connections:
+            # Connection already exists
+            return False
+        conn = SdrConnection(self, target)
+        self.connections[target] = conn
+        return conn
+
+    """
+    Transmit
+    """
+    def xmit(self, dst, src, seqno, data):
+        # Postamble
+        postamble = np.ones(128, dtype=np.complex64)
+        # Build the datalink layer frame
+        frame = build_datalink(dst, src, seqno, bitstring.BitArray(data))
+        # Build the physical layer protocol header
+        phy = build_phy(frame.size)
+        # Combine the physical layer header and the data-link frame
+        symbols = np.concatenate([phy, frame, postamble])
+
+        # Get samples from symbols
+        samples = np.repeat(symbols, SAMPLES_PER_SYMBOL)
+
+        mtu = self.sdr.getStreamMTU(self.txStream)
+        sent = 0
+        while sent < len(samples):
+            chunk = samples[sent:sent+mtu]
+            status = self.sdr.writeStream(self.txStream, [chunk], chunk.size, timeoutUs=1000000)
+            if status.ret != chunk.size:
+                sys.stderr.write("Failed to transmit all samples in writeStream(): {}\n".format(status.ret))
+                return False
+            sent += status.ret
+
+        return True
+
+"""
+SdrConnection
+"""
+class SdrConnection:
+    """
+    Constructor
+    """
+    def __init__(self, iface, target, recvCallback):
+        self.iface = iface
+        self.target = target
+        self.recvCallback = recvCallback
         self.seqno = 0
 
     """
     Send data
     """
     def send(self, data):
-        src = bitstring.BitArray(int=self.myAddress, length=32)
-        dst = bitstring.BitArray(int=self.remoteAddress, length=32)
+        src = bitstring.BitArray(int=self.iface.address, length=32)
+        dst = bitstring.BitArray(int=self.target, length=32)
         self.seqno += 1
-        return transmit_packet(self.sdr, self.txStream, dst, src, self.seqno, data)
+        return self.iface.xmit(dst, src, self.seqno, data)
+        #return transmit_packet(self.sdr, self.txStream, dst, src, self.seqno, data)
+
 
 """
 Main routine
@@ -85,7 +156,6 @@ def main(args):
     except:
         sys.stderr.write("Failed to create an SDR device instance.\n")
         return False
-
     if not sdr:
         sys.stderr.write("Could not find any SDR devices.\n")
         return False
@@ -104,16 +174,14 @@ def main(args):
     sdr.setGain(SoapySDR.SOAPY_SDR_RX, 0, "LNA", args.rx_gain)
     sdr.setFrequency(SoapySDR.SOAPY_SDR_RX, 0, args.rf)
 
-    # Setup Tx/Rx streams
-    txStream = sdr.setupStream(SoapySDR.SOAPY_SDR_TX, SoapySDR.SOAPY_SDR_CF32, [0])
-    rxStream = sdr.setupStream(SoapySDR.SOAPY_SDR_RX, SoapySDR.SOAPY_SDR_CF32, [0])
-
     # Prepare a receive buffer
     rxBuffer = np.zeros(RECEIVE_BUFFER_SIZE, np.complex64)
 
-    # Activate the streams
-    sdr.activateStream(txStream)
-    sdr.activateStream(rxStream)
+    # Initialize an SDR interface
+    iface = SdrInterface(sdr, args.my_address)
+
+    # Initialize a new connection
+    conn = iface.newConnection(args.remote_address, None)
 
     # Loop
     while True:
