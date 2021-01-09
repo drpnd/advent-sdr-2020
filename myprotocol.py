@@ -202,7 +202,6 @@ class SdrConnection:
         dst = bitstring.BitArray(int=self.target, length=32)
         self.seqno += 1
         return self.iface.xmit(dst, self.seqno, data)
-        #return transmit_packet(self.sdr, self.txStream, dst, src, self.seqno, data)
 
 """
 Main routine
@@ -272,34 +271,6 @@ def crc32_check(bstr):
         return True
     else:
         return False
-
-"""
-Transmit
-"""
-def transmit_packet(sdr, txStream, dst, src, seqno, data):
-    # Postamble
-    postamble = np.ones(128, dtype=np.complex64)
-    # Build the datalink layer frame
-    frame = build_datalink(dst, src, seqno, bitstring.BitArray(data))
-    # Build the physical layer protocol header
-    phy = build_phy(frame.size)
-    # Combine the physical layer header and the data-link frame
-    symbols = np.concatenate([phy, frame, postamble])
-
-    # Get samples from symbols
-    samples = np.repeat(symbols, SAMPLES_PER_SYMBOL)
-
-    mtu = sdr.getStreamMTU(txStream)
-    sent = 0
-    while sent < len(samples):
-        chunk = samples[sent:sent+mtu]
-        status = sdr.writeStream(txStream, [chunk], chunk.size, timeoutUs=1000000)
-        if status.ret != chunk.size:
-            sys.stderr.write("Failed to transmit all samples in writeStream(): {}\n".format(status.ret))
-            return False
-        sent += status.ret
-
-    return True
 
 """
 Build phy header
