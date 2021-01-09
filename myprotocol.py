@@ -6,6 +6,7 @@ import numpy as np
 import bitstring
 import binascii
 import crcmod
+import threading
 
 # Arguments
 parser = argparse.ArgumentParser()
@@ -30,6 +31,9 @@ SAMPLE_RATE = 1e6
 SAMPLES_PER_SYMBOL = 10
 RECEIVE_BUFFER_SIZE = 100 * SAMPLES_PER_SYMBOL
 RECEIVE_SIGNAL_THRESHOLD = 0.02
+
+# Messages
+messages = []
 
 """
 CRC-16
@@ -157,9 +161,9 @@ def demodulate(symbols):
     pattern2 = ~pattern1
     found1 = binary.find(pattern1)
     found2 = binary.find(pattern2)
-    if not found1 and not found2:
+    if (not found1) and (not found2):
         return False
-    if not found1 or found2 < found1:
+    if not found1 or (found2 and found2[0] < found1[0]):
         data = ~binary[found2[0]+pattern2.len:]
     else:
         data = binary[found1[0]+pattern1.len:]
@@ -243,7 +247,7 @@ class SdrInterface:
     """
     def xmit(self, dst, seqno, data):
         # Source address
-        src = bitstring.BitArray(int=self.iface.address, length=32)
+        src = bitstring.BitArray(int=self.address, length=32)
         # Postamble
         postamble = np.ones(128, dtype=np.complex64)
         # Build the datalink layer frame
@@ -339,9 +343,9 @@ class SdrConnection:
         return self.iface.xmit(dst, self.seqno, data)
 
 """
-Main routine
+Main routine for SDR
 """
-def main(args):
+def main(args, semaphore):
     # Create an SDR device instance
     try:
         sdr = SoapySDR.Device(dict(driver="lime"))
@@ -371,13 +375,32 @@ def main(args):
 
     # Initialize a new connection
     conn = iface.newConnection(args.remote_address)
+    if not conn:
+        return False
 
     while True:
+        with semaphore:
+            global messages
+            if messages:
+                msg = messages.pop(0)
+                msg = msg.strip()
+                print("Sending: {}".format(msg))
+                conn.send(bytes(msg, "utf8"))
         ret = iface.recv()
         if ret:
-            print(ret)
+            print("Received: {}".format(ret["payload"]))
 
     return True
+
+"""
+Key input worker
+"""
+def workerKeyInput(semaphore):
+    while True:
+        s = sys.stdin.readline()
+        with semaphore:
+            global messages
+            messages.append(s)
 
 """
 Call the main routine
@@ -385,5 +408,9 @@ Call the main routine
 if __name__ == "__main__":
     # Parse the arguments
     args = parser.parse_args()
-    main(args)
-
+    # Prepare a semaphore
+    semaphore = threading.Semaphore(1)
+    t1 = threading.Thread(target=main, args=(args, semaphore,))
+    t2 = threading.Thread(target=workerKeyInput, args=(semaphore, ))
+    t1.start()
+    t2.start()
