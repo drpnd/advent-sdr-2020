@@ -84,6 +84,15 @@ class SdrInterface:
         sdr.activateStream(self.rxStream)
 
     """
+    Deactivate
+    """
+    def deactivate(self):
+        # Deactivate and close the stream
+        self.sdr.deactivateStream(self.rxStream)
+        self.sdr.closeStream(self.rxStream)
+        return True
+
+    """
     Create a new connection
     """
     def newConnection(self, target):
@@ -95,9 +104,11 @@ class SdrInterface:
         return conn
 
     """
-    Transmit
+    Transmit a packet
     """
-    def xmit(self, dst, src, seqno, data):
+    def xmit(self, dst, seqno, data):
+        # Source address
+        src = bitstring.BitArray(int=self.iface.address, length=32)
         # Postamble
         postamble = np.ones(128, dtype=np.complex64)
         # Build the datalink layer frame
@@ -122,6 +133,57 @@ class SdrInterface:
 
         return True
 
+    """
+    Receive a packet (blocking)
+    """
+    def recv(self):
+        # Prepare a receive buffer
+        rxBuffer = np.zeros(RECEIVE_BUFFER_SIZE, np.complex64)
+        # Receive samples
+        status = self.sdr.readStream(self.rxStream, [rxBuffer], rxBuffer.size)
+        if status.ret != rxBuffer.size:
+            sys.stderr.write("Failed to receive samples in readStream(): {}\n".format(status.ret))
+            return False
+        # Detect the edge offset
+        edgeOffset = detectEdge(rxBuffer, SAMPLES_PER_SYMBOL)
+        if not edgeOffset:
+            # No edge detected
+            return False
+        if edgeOffset + 4 >= SAMPLES_PER_SYMBOL:
+            edgeOffset -= SAMPLES_PER_SYMBOL
+        # Decode symbols from the center of a set of samples
+        symbols = rxBuffer[range(edgeOffset + 4, rxBuffer.size, SAMPLES_PER_SYMBOL)]
+        # Detect the preamble
+        preamblePosition = detectPreamble(symbols)
+        if not preamblePosition:
+            # Preamble not detected
+            return False
+        # Receive the samples while the signal is valid
+        packetSymbols = np.copy(symbols[preamblePosition:])
+        while True:
+            status = self.sdr.readStream(self.rxStream, [rxBuffer], rxBuffer.size)
+            if status.ret != rxBuffer.size:
+                sys.stderr.write("Failed to receive samples in readStream(): {}\n".format(status.ret))
+                return False
+            symbols = rxBuffer[range(edgeOffset + 4, rxBuffer.size, SAMPLES_PER_SYMBOL)]
+            packetSymbols = np.concatenate([packetSymbols, symbols])
+            if np.sum(np.abs(symbols) > RECEIVE_SIGNAL_THRESHOLD) != symbols.size:
+                print("Packet end: # of symbols = {}".format(packetSymbols.size))
+                break
+        data = demodulate(packetSymbols)
+        # Parse the protocol data
+        protocol = MyProtocol()
+        if not protocol.parse(data):
+            return False
+        # Check if the destination is my interface
+        if self.address != protocol.destination:
+            return False
+        # Check if the connection is established
+        if protocol.source not in self.connections:
+            return False
+        conn = self.connections[protocol.source]
+        return {"conn": conn, "payload": protocol.payload}
+
 """
 SdrConnection
 """
@@ -129,22 +191,19 @@ class SdrConnection:
     """
     Constructor
     """
-    def __init__(self, iface, target, recvCallback):
+    def __init__(self, iface, target):
         self.iface = iface
         self.target = target
-        self.recvCallback = recvCallback
         self.seqno = 0
 
     """
     Send data
     """
     def send(self, data):
-        src = bitstring.BitArray(int=self.iface.address, length=32)
         dst = bitstring.BitArray(int=self.target, length=32)
         self.seqno += 1
-        return self.iface.xmit(dst, src, self.seqno, data)
+        return self.iface.xmit(dst, self.seqno, data)
         #return transmit_packet(self.sdr, self.txStream, dst, src, self.seqno, data)
-
 
 """
 Main routine
@@ -174,58 +233,18 @@ def main(args):
     sdr.setGain(SoapySDR.SOAPY_SDR_RX, 0, "LNA", args.rx_gain)
     sdr.setFrequency(SoapySDR.SOAPY_SDR_RX, 0, args.rf)
 
-    # Prepare a receive buffer
-    rxBuffer = np.zeros(RECEIVE_BUFFER_SIZE, np.complex64)
-
     # Initialize an SDR interface
     iface = SdrInterface(sdr, args.my_address)
 
     # Initialize a new connection
-    conn = iface.newConnection(args.remote_address, None)
+    conn = iface.newConnection(args.remote_address)
 
-    # Loop
     while True:
-        # Receive samples
-        status = sdr.readStream(rxStream, [rxBuffer], rxBuffer.size)
-        if status.ret != rxBuffer.size:
-            sys.stderr.write("Failed to receive samples in readStream(): {}\n".format(status.ret))
-            return False
-        # Detect the edge offset
-        samples = rxBuffer
-        edgeOffset = detectEdge(samples, SAMPLES_PER_SYMBOL)
-        if not edgeOffset:
-            # No edge detected
-            continue
-        if edgeOffset + 4 >= SAMPLES_PER_SYMBOL:
-            edgeOffset -= SAMPLES_PER_SYMBOL
-        # Decode symbols from the center of a set of samples
-        symbols = samples[range(edgeOffset + 4, samples.size, SAMPLES_PER_SYMBOL)]
-        # Detect the preamble
-        preamblePosition = detectPreamble(symbols)
-        if not preamblePosition:
-            # Preamble not detected
-            continue
-        # Receive the samples while the signal is valid
-        packetSymbols = np.copy(symbols[preamblePosition:])
-        while True:
-            status = sdr.readStream(rxStream, [rxBuffer], rxBuffer.size)
-            if status.ret != rxBuffer.size:
-                sys.stderr.write("Failed to receive samples in readStream(): {}\n".format(status.ret))
-                return False
-            samples = rxBuffer
-            symbols = samples[range(edgeOffset + 4, samples.size, SAMPLES_PER_SYMBOL)]
-            packetSymbols = np.concatenate([packetSymbols, symbols])
-            if np.sum(np.abs(symbols) > RECEIVE_SIGNAL_THRESHOLD) != symbols.size:
-                print("Packet end: # of symbols = {}".format(packetSymbols.size))
-                break
-        data = demodulate(packetSymbols)
-
-    # Deactivate and close the stream
-    sdr.deactivateStream(rxStream)
-    sdr.closeStream(rxStream)
+        ret = iface.recv()
+        if ret:
+            print(ret)
 
     return True
-
 
 """
 CRC-16
@@ -315,7 +334,6 @@ Modulate
 """
 def modulate_bpsk(data):
     return np.exp( 1j * math.pi * np.array(data, np.complex64) ).astype(np.complex64)
-
 
 """
 Detect edge
